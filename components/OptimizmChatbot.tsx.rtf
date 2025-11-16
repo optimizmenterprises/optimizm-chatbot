@@ -1,0 +1,370 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2759
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 // OptimizmChatbot.tsx\
+// A production-ready React chat widget for Optimizm Enterprises.\
+// - TailwindCSS UI, shadcn/button optional\
+// - Lead capture (email) with localStorage session\
+// - Suggested prompts\
+// - Streaming-friendly (works with fetch ReadableStream)\
+// - Drop-in usage: <OptimizmChatbot apiUrl="/api/chat" />\
+//\
+// ------------------------------\
+// Quick Start (Next.js)\
+// ------------------------------\
+// 1) Ensure Tailwind is set up. Add this file to /components/OptimizmChatbot.tsx\
+// 2) Create an API route at /app/api/chat/route.ts (Next.js 13+) or /pages/api/chat.ts.\
+//    Use the stub included at the bottom of this file (search: API ROUTE STUBS)\
+// 3) Import and render in any page:\
+//      import OptimizmChatbot from "@/components/OptimizmChatbot";\
+//      export default function Page()\{\
+//        return (\
+//          <main className="min-h-screen bg-neutral-950 text-neutral-100 p-6">\
+//            <div className="max-w-3xl mx-auto">\
+//              <OptimizmChatbot apiUrl="/api/chat" title="Optimizm AI" brandColor="#00E5D8" />\
+//            </div>\
+//          </main>\
+//        );\
+//      \}\
+// 4) Set your OpenAI env var in your hosting (e.g., VERCEL): OPENAI_API_KEY="sk-..."\
+// 5) Deploy. You can later connect RAG/KB via the /api/chat implementation.\
+\
+import React, \{ useEffect, useMemo, useRef, useState \} from "react";\
+\
+export type ChatMessage = \{\
+  id: string;\
+  role: "user" | "assistant" | "system";\
+  content: string;\
+  createdAt?: number;\
+\};\
+\
+type Props = \{\
+  apiUrl: string; // e.g., "/api/chat"\
+  title?: string; // UI title\
+  brandColor?: string; // hex like "#00E5D8"\
+  welcomeMessage?: string; // first assistant message\
+  leadCapture?: boolean; // ask for email before chat\
+  suggestedPrompts?: string[];\
+\};\
+\
+const DEFAULT_SUGGESTIONS = [\
+  "What does Optimizm Enterprises do?",\
+  "Help me build an AI workflow for lead capture",\
+  "Turn this idea into an Instagram carousel",\
+  "Draft an SOP to automate my weekly reporting",\
+];\
+\
+function uid() \{\
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);\
+\}\
+\
+function useLocalStorage<T>(key: string, initial: T) \{\
+  const [val, setVal] = useState<T>(() => \{\
+    try \{\
+      const raw = localStorage.getItem(key);\
+      return raw ? (JSON.parse(raw) as T) : initial;\
+    \} catch \{\
+      return initial;\
+    \}\
+  \});\
+  useEffect(() => \{\
+    try \{\
+      localStorage.setItem(key, JSON.stringify(val));\
+    \} catch \{\}\
+  \}, [key, val]);\
+  return [val, setVal] as const;\
+\}\
+\
+const EmailGate: React.FC<\{ onSubmit: (email: string) => void; brandColor: string \}>\
+= (\{ onSubmit, brandColor \}) => \{\
+  const [email, setEmail] = useState("");\
+  const handle = (e: React.FormEvent) => \{\
+    e.preventDefault();\
+    if (!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email)) return;\
+    onSubmit(email);\
+  \};\
+  return (\
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">\
+      <form onSubmit=\{handle\} className="w-full max-w-md rounded-2xl bg-neutral-900 p-6 shadow-xl border border-neutral-800">\
+        <h2 className="text-xl font-semibold mb-2">Get instant access</h2>\
+        <p className="text-sm text-neutral-400 mb-4">Enter your email to start chatting with Optimizm AI. We'll occasionally send you helpful resources. You can unsubscribe anytime.</p>\
+        <input\
+          type="email"\
+          className="w-full rounded-xl bg-neutral-800 border border-neutral-700 px-4 py-3 focus:outline-none focus:ring-2"\
+          style=\{\{ outlineColor: brandColor \}\}\
+          placeholder="you@company.com"\
+          value=\{email\}\
+          onChange=\{(e) => setEmail(e.target.value)\}\
+        />\
+        <button\
+          type="submit"\
+          className="mt-4 w-full rounded-xl px-4 py-3 font-medium"\
+          style=\{\{ backgroundColor: brandColor, color: "#0a0a0a" \}\}\
+        >\
+          Start Chatting\
+        </button>\
+        <p className="text-xs text-neutral-500 mt-3">By continuing, you agree to our <a className="underline" href="#">Terms</a> and <a className="underline" href="#">Privacy Policy</a>.</p>\
+      </form>\
+    </div>\
+  );\
+\};\
+\
+const MessageBubble: React.FC<\{ m: ChatMessage; brandColor: string \}>\
+= (\{ m, brandColor \}) => \{\
+  const isUser = m.role === "user";\
+  return (\
+    <div className=\{`flex $\{isUser ? "justify-end" : "justify-start"\}`\}>\
+      <div\
+        className=\{`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-md border`\}\
+        style=\{\{\
+          background: isUser ? brandColor : "#111",\
+          color: isUser ? "#0a0a0a" : "#e5e5e5",\
+          borderColor: isUser ? brandColor : "#262626",\
+        \}\}\
+        aria-label=\{isUser ? "User message" : "Assistant message"\}\
+      >\
+        \{m.content\}\
+      </div>\
+    </div>\
+  );\
+\};\
+\
+const OptimizmChatbot: React.FC<Props> = (\{\
+  apiUrl,\
+  title = "Optimizm AI",\
+  brandColor = "#00E5D8",\
+  welcomeMessage = "Hey! I\'92m Optimizm AI \'97 ask me anything about AI automation, content systems, or Optimizm Enterprises.",\
+  leadCapture = true,\
+  suggestedPrompts = DEFAULT_SUGGESTIONS,\
+\}) => \{\
+  const [sessionId] = useLocalStorage<string>("optimizm:session", uid());\
+  const [email, setEmail] = useLocalStorage<string>("optimizm:email", "");\
+  const [messages, setMessages] = useState<ChatMessage[]>([\
+    \{ id: uid(), role: "assistant", content: welcomeMessage, createdAt: Date.now() \},\
+  ]);\
+  const [input, setInput] = useState("");\
+  const [pending, setPending] = useState(false);\
+  const [error, setError] = useState<string | null>(null);\
+  const listRef = useRef<HTMLDivElement>(null);\
+\
+  useEffect(() => \{\
+    listRef.current?.scrollTo(\{ top: listRef.current.scrollHeight, behavior: "smooth" \});\
+  \}, [messages, pending]);\
+\
+  async function send(text: string) \{\
+    if (!text.trim()) return;\
+    setError(null);\
+    const userMsg: ChatMessage = \{ id: uid(), role: "user", content: text, createdAt: Date.now() \};\
+    const placeholder: ChatMessage = \{ id: uid(), role: "assistant", content: "", createdAt: Date.now() \};\
+    setMessages((prev) => [...prev, userMsg, placeholder]);\
+    setInput("");\
+    setPending(true);\
+\
+    try \{\
+      const res = await fetch(apiUrl, \{\
+        method: "POST",\
+        headers: \{ "Content-Type": "application/json" \},\
+        body: JSON.stringify(\{ sessionId, email, messages: [...messages, userMsg].map((\{ role, content \}) => (\{ role, content \})) \}),\
+      \});\
+\
+      if (!res.ok) \{\
+        const t = await res.text();\
+        throw new Error(t || `HTTP $\{res.status\}`);\
+      \}\
+\
+      // Stream if possible\
+      const reader = res.body?.getReader();\
+      const decoder = new TextDecoder();\
+      let acc = "";\
+      if (reader) \{\
+        while (true) \{\
+          const \{ value, done \} = await reader.read();\
+          if (done) break;\
+          acc += decoder.decode(value, \{ stream: true \});\
+          setMessages((prev) => prev.map((m) => (m.id === placeholder.id ? \{ ...m, content: acc \} : m)));\
+        \}\
+      \} else \{\
+        acc = await res.text();\
+        setMessages((prev) => prev.map((m) => (m.id === placeholder.id ? \{ ...m, content: acc \} : m)));\
+      \}\
+    \} catch (e: any) \{\
+      setError(e?.message || "Something went wrong.");\
+      setMessages((prev) => prev.filter((m) => m.id !== placeholder.id));\
+    \} finally \{\
+      setPending(false);\
+    \}\
+  \}\
+\
+  const headerStyle = useMemo(() => (\{ background: `linear-gradient(135deg, $\{brandColor\}22, #0b0b0b)` \}), [brandColor]);\
+\
+  return (\
+    <div className="rounded-2xl border border-neutral-800 bg-neutral-950/80 backdrop-blur shadow-2xl overflow-hidden">\
+      \{/* Header */\}\
+      <div className="p-4 border-b border-neutral-800" style=\{headerStyle\}>\
+        <div className="flex items-center justify-between gap-3">\
+          <div className="flex items-center gap-3">\
+            <div className="h-8 w-8 rounded-xl" style=\{\{ backgroundColor: brandColor \}\} />\
+            <div>\
+              <h1 className="text-lg font-semibold">\{title\}</h1>\
+              <p className="text-xs text-neutral-400">Powered by Optimizm Enterprises</p>\
+            </div>\
+          </div>\
+          <a href="#" className="text-xs underline text-neutral-400">Privacy</a>\
+        </div>\
+      </div>\
+\
+      \{/* Body */\}\
+      <div className="p-4">\
+        \{/* Suggestions */\}\
+        \{messages.length <= 1 && (\
+          <div className="mb-4 grid grid-cols-1 sm:grid-cols-2 gap-2">\
+            \{suggestedPrompts.map((s) => (\
+              <button\
+                key=\{s\}\
+                className="rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-left text-sm hover:bg-neutral-800"\
+                onClick=\{() => send(s)\}\
+              >\
+                \{s\}\
+              </button>\
+            ))\}\
+          </div>\
+        )\}\
+\
+        \{/* Message list */\}\
+        <div ref=\{listRef\} className="max-h-[55vh] overflow-y-auto space-y-3 pr-1">\
+          \{messages.map((m) => (\
+            <MessageBubble key=\{m.id\} m=\{m\} brandColor=\{brandColor\} />\
+          ))\}\
+          \{pending && (\
+            <div className="text-xs text-neutral-500">Assistant is typing\'85</div>\
+          )\}\
+        </div>\
+\
+        \{/* Error */\}\
+        \{error && (\
+          <div className="mt-3 text-xs text-red-400">\{error\}</div>\
+        )\}\
+\
+        \{/* Input */\}\
+        <form\
+          onSubmit=\{(e) => \{\
+            e.preventDefault();\
+            send(input);\
+          \}\}\
+          className="mt-4 flex items-end gap-2"\
+          aria-label="Send a message"\
+        >\
+          <textarea\
+            value=\{input\}\
+            onChange=\{(e) => setInput(e.target.value)\}\
+            className="min-h-[46px] max-h-40 flex-1 rounded-2xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-sm focus:outline-none focus:ring-2"\
+            style=\{\{ outlineColor: brandColor \}\}\
+            placeholder="Ask me anything about AI, automation, content, or Optimizm\'85"\
+          />\
+          <button\
+            type="submit"\
+            disabled=\{pending || !input.trim()\}\
+            className="rounded-2xl px-4 py-3 text-sm font-semibold disabled:opacity-50 border border-neutral-800"\
+            style=\{\{ backgroundColor: brandColor, color: "#0a0a0a" \}\}\
+          >\
+            Send\
+          </button>\
+        </form>\
+        <p className="mt-2 text-[11px] text-neutral-500">This chat may generate AI responses that could be inaccurate. Please verify important information.</p>\
+      </div>\
+\
+      \{/* Email gate */\}\
+      \{leadCapture && !email && (\
+        <EmailGate\
+          brandColor=\{brandColor\}\
+          onSubmit=\{(e) => \{\
+            setEmail(e);\
+          \}\}\
+        />\
+      )\}\
+    </div>\
+  );\
+\};\
+\
+export default OptimizmChatbot;\
+\
+// ------------------------------\
+// API ROUTE STUBS (pick one)\
+// ------------------------------\
+// 1) Next.js 13+ (App Router): /app/api/chat/route.ts\
+// -----------------------------------------------\
+// import \{ NextRequest \} from "next/server";\
+// export const runtime = "edge"; // optional: faster\
+// export async function POST(req: NextRequest) \{\
+//   try \{\
+//     const \{ messages, sessionId, email \} = await req.json();\
+//     // TODO: Save lead: sessionId + email to your DB or provider\
+//     // Basic echo for testing (replace with OpenAI call)\
+//     const text = "Thanks for trying Optimizm AI! You said: " + (messages?.at(-1)?.content ?? "");\
+//     return new Response(text, \{ status: 200, headers: \{ "Content-Type": "text/plain" \} \});\
+//   \} catch (e: any) \{\
+//     return new Response(e?.message || "Bad request", \{ status: 400 \});\
+//   \}\
+// \}\
+//\
+// 2) Next.js Pages Router: /pages/api/chat.ts\
+// -----------------------------------------------\
+// import type \{ NextApiRequest, NextApiResponse \} from "next";\
+// export default async function handler(req: NextApiRequest, res: NextApiResponse) \{\
+//   if (req.method !== "POST") return res.status(405).send("Method not allowed");\
+//   try \{\
+//     const \{ messages, sessionId, email \} = req.body;\
+//     // TODO: Save lead: sessionId + email\
+//     const text = "Thanks for trying Optimizm AI! You said: " + (messages?.at(-1)?.content ?? "");\
+//     res.setHeader("Content-Type", "text/plain");\
+//     res.status(200).send(text);\
+//   \} catch (e: any) \{\
+//     res.status(400).send(e?.message || "Bad request");\
+//   \}\
+// \}\
+//\
+// ------------------------------\
+// PRODUCTION OPENAI IMPLEMENTATION (replace in API)\
+// ------------------------------\
+// Example for App Router (Edge). Requires OPENAI_API_KEY in env.\
+// import OpenAI from "openai";\
+// const client = new OpenAI(\{ apiKey: process.env.OPENAI_API_KEY \});\
+// export const runtime = "edge";\
+// export async function POST(req: Request) \{\
+//   const \{ messages, sessionId, email \} = await req.json();\
+//   // Optional: persist lead to your DB\
+//   const stream = await client.chat.completions.create(\{\
+//     model: "gpt-4o-mini",\
+//     messages: [\
+//       \{ role: "system", content: "You are Optimizm AI, a helpful assistant for entrepreneurs. Keep answers concise, practical, and brand-aligned with Optimizm Enterprises (finish strong, optimistic, actionable)." \},\
+//       ...messages,\
+//     ],\
+//     stream: true,\
+//     temperature: 0.3,\
+//   \});\
+//   const encoder = new TextEncoder();\
+//   const readable = new ReadableStream(\{\
+//     async start(controller) \{\
+//       for await (const chunk of stream) \{\
+//         const token = chunk.choices?.[0]?.delta?.content || "";\
+//         if (token) controller.enqueue(encoder.encode(token));\
+//       \}\
+//       controller.close();\
+//     \},\
+//   \});\
+//   return new Response(readable, \{ headers: \{ "Content-Type": "text/plain; charset=utf-8" \} \});\
+// \}\
+//\
+// ------------------------------\
+// RAG/KNOwLEDGE BASE NOTES\
+// ------------------------------\
+// 1) Create /data/optimizm-faq.md and load it in the API route.\
+// 2) Use embeddings + vector DB (e.g., Vercel KV/pgvector/Supabase) to find relevant chunks.\
+// 3) Add chunks as system or context messages before the model call.\
+// 4) Guardrails: refuse legal/medical, cite when unsure, link to contact.\
+// 5) Analytics: log sessionId, email, message count, lastActive for funnels.\
+}
